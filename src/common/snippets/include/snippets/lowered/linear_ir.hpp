@@ -30,8 +30,6 @@ enum PerfCountMode {
 
 class Config {
 public:
-    // True if the lowered Emitters need to be accessed during runtime. Normally they're destroyed after code emission.
-    bool m_save_expressions = false;
     // True if we should check runtime info for nodes to call specific needed transformations
     bool m_need_fill_tail_register = false;
     size_t m_loop_depth = 1;
@@ -72,11 +70,11 @@ public:
     std::shared_ptr<LinearIR> clone() const;
     static LinearIR::container deep_copy_range(LinearIR::container::const_iterator begin,
                                                LinearIR::container::const_iterator end,
-                                               ExressionMap& expression_map);
+                                               ExpressionMap& expression_map);
 
-    const container& get_ops() const {return m_expressions; }
-    const io_container& get_IO_ops() const {return m_io_expressions; }
-    Config get_config() {return m_config; }
+    const container& get_ops() const { return m_expressions; }
+    const io_container& get_IO_ops() const { return m_io_expressions; }
+    const Config& get_config() const { return m_config; }
     void set_loop_depth(size_t loop_depth) { m_config.m_loop_depth = loop_depth; }
 
     const ExpressionPtr& get_expr_by_node(const std::shared_ptr<Node>& n) const;
@@ -135,6 +133,8 @@ public:
     IShapeInferSnippets::Result shape_infer(const std::vector<VectorDimsRef>& input_shapes);
     const std::shared_ptr<ShapeInferSnippetsNode>& get_shape_infer_instance() const {return m_shape_infer; }
     VectorDims get_master_shape() const;
+
+    bool is_dynamic() const;
 
     /* ------ Helpers for work with LinearIR ----- */
     /**
@@ -253,6 +253,7 @@ private:
     Config m_config{};
     LoopManagerPtr m_loop_manager = nullptr;
     std::shared_ptr<IShapeInferSnippetsFactory> m_shape_infer_factory;
+    bool m_is_dynamic = false;
 };
 
 template<typename iterator>

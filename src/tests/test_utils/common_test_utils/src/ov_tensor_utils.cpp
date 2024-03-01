@@ -6,6 +6,7 @@
 
 #include "common_test_utils/data_utils.hpp"
 #include "openvino/core/type/element_type_traits.hpp"
+#include "openvino/op/constant.hpp"
 #include "precomp.hpp"
 
 namespace ov {
@@ -174,12 +175,12 @@ ov::Tensor create_and_fill_tensor_unique_sequence(const ov::element::Type elemen
     return tensor;
 }
 
-ov::runtime::Tensor create_and_fill_tensor_normal_distribution(const ov::element::Type element_type,
-                                                               const ov::Shape& shape,
-                                                               const float mean,
-                                                               const float stddev,
-                                                               const int seed) {
-    auto tensor = ov::runtime::Tensor{element_type, shape};
+ov::Tensor create_and_fill_tensor_normal_distribution(const ov::element::Type element_type,
+                                                      const ov::Shape& shape,
+                                                      const float mean,
+                                                      const float stddev,
+                                                      const int seed) {
+    auto tensor = ov::Tensor{element_type, shape};
 #define CASE(X)                                                                              \
     case X:                                                                                  \
         fill_data_ptr_normal_random_float(tensor.data<element_type_traits<X>::value_type>(), \
@@ -218,12 +219,52 @@ ov::runtime::Tensor create_and_fill_tensor_normal_distribution(const ov::element
     return tensor;
 }
 
-ov::runtime::Tensor create_and_fill_tensor_consistently(const ov::element::Type element_type,
-                                                        const ov::Shape& shape,
-                                                        const uint32_t range,
-                                                        const int32_t start_from,
-                                                        const int32_t resolution) {
-    auto tensor = ov::runtime::Tensor{element_type, shape};
+ov::Tensor create_and_fill_tensor_real_distribution(const ov::element::Type element_type,
+                                                    const ov::Shape& shape,
+                                                    const float min,
+                                                    const float max,
+                                                    const int seed) {
+    auto tensor = ov::Tensor{element_type, shape};
+#define CASE(X)                                                                            \
+    case X:                                                                                \
+        fill_data_ptr_real_random_float(tensor.data<element_type_traits<X>::value_type>(), \
+                                        shape_size(shape),                                 \
+                                        min,                                               \
+                                        max,                                               \
+                                        seed);                                             \
+        break;
+    switch (element_type) {
+        CASE(ov::element::Type_t::boolean)
+        CASE(ov::element::Type_t::i8)
+        CASE(ov::element::Type_t::i16)
+        CASE(ov::element::Type_t::i32)
+        CASE(ov::element::Type_t::i64)
+        CASE(ov::element::Type_t::u8)
+        CASE(ov::element::Type_t::u16)
+        CASE(ov::element::Type_t::u32)
+        CASE(ov::element::Type_t::u64)
+        CASE(ov::element::Type_t::bf16)
+        CASE(ov::element::Type_t::f16)
+        CASE(ov::element::Type_t::f32)
+        CASE(ov::element::Type_t::f64)
+    case ov::element::Type_t::u1:
+    case ov::element::Type_t::i4:
+    case ov::element::Type_t::u4:
+        fill_data_ptr_real_random_float(static_cast<uint8_t*>(tensor.data()), tensor.get_byte_size(), min, max, seed);
+        break;
+    default:
+        OPENVINO_THROW("Unsupported element type: ", element_type);
+    }
+#undef CASE
+    return tensor;
+}
+
+ov::Tensor create_and_fill_tensor_consistently(const ov::element::Type element_type,
+                                               const ov::Shape& shape,
+                                               const uint32_t range,
+                                               const int32_t start_from,
+                                               const int32_t resolution) {
+    auto tensor = ov::Tensor{element_type, shape};
 #define CASE(X)                                                                       \
     case X:                                                                           \
         fill_data_ptr_consistently(tensor.data<element_type_traits<X>::value_type>(), \
@@ -265,11 +306,24 @@ ov::runtime::Tensor create_and_fill_tensor_consistently(const ov::element::Type 
 constexpr double eps = std::numeric_limits<double>::epsilon();
 
 inline double less(double a, double b) {
-    return (b - a) > (std::fmax(std::fabs(a), std::fabs(b)) * eps);
+    return std::fabs(a - b) > eps && a < b;
 }
 
 inline double less_or_equal(double a, double b) {
-    return (b - a) >= (std::fmax(std::fabs(a), std::fabs(b)) * eps);
+    bool res = true;
+    if (std::isnan(a) || std::isnan(b)) {
+        res = false;
+    } else if (std::isinf(b) && b > 0) {
+        // b is grater than any number or eq the +Inf
+        res = true;
+    } else if (std::isinf(a) && a > 0) {
+        res = false;
+    } else {
+        res = (std::fabs(b - a) <= (std::fmax(std::fabs(a), std::fabs(b)) * eps) || a < b);
+    }
+    double eq_midle_res = std::fabs(b - a);
+    bool eq_res = (std::fabs(b - a) <= (std::fmax(std::fabs(a), std::fabs(b)) * eps));
+    return res;
 }
 
 struct Error {
@@ -336,6 +390,7 @@ void compare(const ov::Tensor& expected,
             }
             auto abs_median = calculate_median(abs_values);
             abs_threshold = abs_median * 0.05 < 1e-5 ? 1e-5 : 0.05 * abs_median;
+
             if (std::is_integral<ExpectedT>::value) {
                 abs_threshold = std::ceil(abs_threshold);
             }
@@ -348,10 +403,21 @@ void compare(const ov::Tensor& expected,
         std::cout << "[ COMPARATION ] abs_threshold: " << abs_threshold << std::endl;
     }
 
+    auto max_type_expected = std::numeric_limits<ExpectedT>::max();
+    auto max_type_actual = std::numeric_limits<ActualT>::max();
+    auto min_type_expected = std::numeric_limits<ExpectedT>::min();
+    auto min_type_actual = std::numeric_limits<ActualT>::min();
     Error abs_error(abs_threshold), rel_error(rel_threshold);
     for (size_t i = 0; i < shape_size_cnt; ++i) {
         double expected_value = expected_data[i];
         double actual_value = actual_data[i];
+        if ((std::isinf(expected_value) || expected_value >= max_type_expected) &&
+            (std::isinf(actual_value) || actual_value >= max_type_actual)) {
+            continue;
+        } else if ((std::isinf(expected_value) || expected_value <= min_type_expected) &&
+                   (std::isinf(actual_value) || actual_value <= min_type_actual)) {
+            continue;
+        }
         if (std::isnan(expected_value) && std::isnan(actual_value))
             continue;
         if (std::isnan(expected_value)) {
@@ -364,6 +430,7 @@ void compare(const ov::Tensor& expected,
             out_stream << "Actual value is NAN but Expected value is not on coordinate: " << i;
             throw std::runtime_error(out_stream.str());
         }
+
         double abs = std::fabs(expected_value - actual_value);
         double rel = expected_value ? (abs / std::fabs(expected_value)) : abs;
         abs_error.update(abs, i);
@@ -382,6 +449,16 @@ void compare(const ov::Tensor& expected,
                    << rel_error.mean << "; rel threshold " << rel_threshold;
         throw std::runtime_error(out_stream.str());
     }
+}
+
+void compare_str(const ov::Tensor& expected, const ov::Tensor& actual) {
+    ASSERT_EQ(expected.get_element_type(), ov::element::string);
+    ASSERT_EQ(actual.get_element_type(), ov::element::string);
+    EXPECT_EQ(expected.get_shape(), actual.get_shape());
+
+    const auto expected_const = ov::op::v0::Constant(expected);
+    const auto result_const = ov::op::v0::Constant(actual);
+    EXPECT_EQ(expected_const.get_value_strings(), result_const.get_value_strings());
 }
 
 void compare(const ov::Tensor& expected,
@@ -441,6 +518,9 @@ void compare(const ov::Tensor& expected,
         CASE(ov::element::Type_t::u16)
         CASE(ov::element::Type_t::u32)
         CASE(ov::element::Type_t::u64)
+    case ov::element::Type_t::string:
+        compare_str(expected, actual);
+        break;
     default:
         OPENVINO_THROW("Unsupported element type: ", expected.get_element_type());
     }
